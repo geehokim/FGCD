@@ -1,0 +1,6 @@
+#################### Model ####################
+model:
+  name: "CNN"
+  pretrained: False
+  l2_norm: False
+  use_bn_layer: False

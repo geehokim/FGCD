@@ -1,0 +1,35 @@
+## Client ##
+type: InterpolateClient
+
+ce_loss:
+  weight: 1 
+
+interpolation:
+  ce_weight: 1
+  kl_weight: 1
+  type: stochastic
+  forward_type: layer
+  low: -0.5
+  high: -0.5
+  branch: [l, i]
+  branch_probs: [0.33, 0.66]
+  branches:
+    layer1: [l, g]
+    layer2: [l, g]
+    layer3: [l, i]
+    layer4: [l, i]
+    fc: [l, i]
+  repeat: 1
+  temp: 1
+  feature_relu: True
+
+
+# interpolation:
+#   type: fixed
+#   factor: -0.5
+
+
+
+# feature_align_loss:
+#   weight: 1
+#   align_type: cosine

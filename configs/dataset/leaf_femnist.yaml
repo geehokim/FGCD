@@ -1,0 +1,5 @@
+### dataset ###
+name: 'leaf_femnist'
+path: '/root/data/leaf-torch'
+client_path: " "
+num_instances: 0

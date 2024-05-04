@@ -1,0 +1,27 @@
+## Client ##
+type: MetricClient
+
+ce_loss:
+  weight: 1
+  
+metric_loss:
+  loss_type: supervised
+  topk_pos: 1
+  topk_neg: 2
+  temp: 0.05
+  pairs:
+    - name: metric
+      pos: nn
+      neg: nn
+      weight: 1
+      loss_type: supervised
+      adapt_ce: neg_smoothing
+  weight: 1
+  branch_level: [0,1,2,3,4]
+  feature_relu: False
+  interpolation_type: full
+
+feature_align_loss:
+  weight: 0
+  align_type: cosine
+      

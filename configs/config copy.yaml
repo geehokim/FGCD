@@ -1,0 +1,82 @@
+#################### Default Setup ####################
+seed: 0
+wandb: False
+enable_benchmark: True
+use_amp: True
+multiprocessing: False
+main_gpu: '0'
+
+refactoring: True
+verbose: False
+
+#################### Dataset ####################
+dataset:
+  name: 'CIFAR100'
+  path: './data'
+  client_path: "./client_data"
+  num_instances: 0
+
+#################### Model ####################
+model:
+  name: "ResNet18_base"
+  pretrained: False
+  l2_norm: False
+  use_bn_layer: False
+
+#################### Data Split ####################
+split:
+  mode: 'dirichlet'
+  alpha: 0.3
+  unbalanced: False
+  overlap_ratio: 0.0
+  create_client_dataset: False
+
+#################### Optimizer ####################
+optimizer:
+  name: sgd
+  momentum: 0.0
+  wd: 1e-3
+
+#################### Method ####################
+method_name: FedAvg
+remark: ""
+
+## Trainer ##
+trainer:
+  type: Trainer
+  num_clients: 100
+  participation_rate: 0.05
+  global_rounds: 1500
+  local_epochs: 5
+  batch_size: 50
+  local_lr: 0.1
+  lr_decay: 0.998
+  global_lr: 1.0
+  workers: 0
+  pin_memory: True
+
+## Server ##
+server:
+  type: Server
+
+## Client ##
+client:
+  type: Client
+
+#################### Eval ####################
+eval:
+  freq: 1
+  batch_size: 128
+
+
+#################### wandb && logging setup ####################
+project: "federated_learning"
+log_dir: '/131_data/checkpoints/bc_fl'
+
+
+#################### Eval ####################
+# print_freq: 10
+
+# defaults:
+  # - dataset: cifar100
+  # - model: ResNet18_base

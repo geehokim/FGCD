@@ -1,0 +1,18 @@
+#################### Default Setup ####################
+seed: 0
+wandb: True
+enable_benchmark: True
+use_amp: True
+multiprocessing: False
+main_gpu: '0'
+
+refactoring: True
+verbose: False
+
+method_name: FedAvg
+remark: ""
+
+#################### Method ####################
+defaults:
+  dataset: cifar100_i2
+  client: metric

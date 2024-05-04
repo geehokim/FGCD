@@ -1,0 +1,5 @@
+### dataset ###
+name: 'Shakespeare'
+path: '/root/data/'
+client_path: " "
+num_instances: 0

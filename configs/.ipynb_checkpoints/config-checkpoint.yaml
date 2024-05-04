@@ -1,0 +1,155 @@
+
+#################### Default Setup ####################
+wandb: True
+seed: 0
+enable_benchmark: True
+use_amp: True
+multiprocessing: False
+main_gpu: '0'
+num_workers: 0
+pin_memory: True
+refactoring: True
+verbose: False
+# method_name: FedAvg
+remark: ""
+
+checkpoint_path: './checkpoints'
+exp_name: base
+output_model_path: 'res18.pt'
+save_freq: 1000
+batch_size: 50
+save_test: False 
+
+## Resume
+load_model_path: False      # ====> may be like ./checkpoints/CIFAR100/iid/iid_base/res18.pt. use command line +load_model_path=(path)
+wandb_resume_id: False
+
+# ###### exp setting ######
+# num_clients: 100
+# participation_rate: 0.05
+# batch_size: 50
+# lr_decay: 0.998
+# local_lr: 0.1
+# local_epochs: 5
+# global_lr: 1.0
+# global_rounds: 1500
+
+
+###### wandb && logging ######
+project: "federated_learning"
+# log_dir: '/131_data/checkpoints/bc_fl'
+log_dir: './checkpoints' # 131_data
+
+#################### Dataset ####################
+# dataset:
+#   name: 'CIFAR100'
+#   path: './data'
+#   client_path: "./client_data"
+#   num_instances: 0
+
+#################### Model ####################
+model:
+  name: "ResNet18_base"
+  pretrained: False
+  l2_norm: False
+  use_bn_layer: False
+  freeze_layer: False  # or ['fc']
+  last_feature_dim: 512
+
+#################### Data Split ####################
+split:
+  mode: 'dirichlet'
+  alpha: 0.3
+  class_per_client: 0 # only for skew mode
+  unbalanced: False
+  overlap_ratio: 0.0
+  create_client_dataset: False
+  limit_total_classes: 3
+  limit_number_per_class : 1000
+  toy_noniid_rate : 0.3
+
+#################### Optimizer ####################
+optimizer:
+  name: sgd
+  momentum: 0.0
+  wd: 1e-3
+
+#################### Method ####################
+
+# ## Server ##
+# server:
+#   type: Server
+#   momentum : -1
+#   FedACG: False
+
+
+#################### Eval ####################
+eval:
+  freq: 1
+  local_freq: 20
+  retrieval_freq: 0
+  batch_size: 128
+
+umap:
+  freq: 20
+  samples_per_class: 100
+  umap_dim: 2
+  draw_classes : 10
+  
+collapse:
+  freq: 20
+
+svd:
+  freq: 100
+  stride: 1
+
+minority_collapse : False
+
+save_for_distance_freq: 50
+
+landscape:
+  freq: 0
+  resolution : 5
+  x : '-1:1:5'
+  y : '-1:1:5'
+  xmin : -2.0
+  xmax : 2.0
+  xnum : 10
+  ymin : -2.0
+  ymax : 2.0
+  ynum : 10
+  adaptive_xy_range : True
+  dir_type : 'states'
+  ignore : None
+  loss_name : CE
+  adaptive_v : True
+  visualize_local_loss : True
+  grid_size : 1.25
+
+visualize_prototype:
+  freq: 20
+
+
+compare_base_is_FedAvg : False
+
+
+analysis_mode: '' # option: _flatten_feature, 
+
+
+analysis: True
+
+defaults:
+  - trainer: base
+  - client: base
+  - evaler: base
+  - dataset: cifar100
+  - client_compare: base
+  - server: base
+  - override hydra/job_logging: colorlog_custom
+  - override hydra/hydra_logging: colorlog
+
+
+
+
+  # - dataset: cifar100
+  # - model: ResNet18_base
