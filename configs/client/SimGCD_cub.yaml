@@ -1,0 +1,22 @@
+## Client ##
+type: SimGCDClient
+n_views: 2
+
+num_instances: 2
+#temperature: 0.07
+unsup_temperature: 1
+sup_temperature: 0.07 # default
+sup_con_weight: 0.35
+unsup_con_weight: 0.65
+g_clipping: True
+proj_layer_lr_decay: 1
+warmup_teacher_temp: 0.07
+teacher_temp: 0.04
+warmup_teacher_temp_epochs: 30
+memax_weight: 2
+
+
+freeze_extractor: False
+
+# resume warmedup model
+pretrained_dir: 'dino'

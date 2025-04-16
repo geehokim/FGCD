@@ -1,0 +1,13 @@
+## Trainer ##
+type: Trainer
+num_clients: 1
+participation_rate: 1
+# batch_size: 50
+# local_lr_decay: 0.998
+local_lr_decay: 0.995
+local_lr: 0.1
+local_epochs: 200
+global_lr: 1.0
+global_rounds: 1
+lr_scheduler: cosanneal
+local_eval: True

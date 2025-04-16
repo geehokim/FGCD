@@ -3,7 +3,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from utils import DatasetSplit,IL,IL_negsum
 import torch
-from local_update_method.global_and_online_model import *
 
 
 ####### batch_size는 client batch_size의 num_of_participation_clients배가 되어야 할 것.

@@ -1,0 +1,31 @@
+## Client ##
+type: GCLClient
+n_views: 2
+#temperature: 0.07
+unsup_temperature: 0.07
+sup_temperature: 0.05 # default
+sup_con_weight: 0.35
+sup_cls_weight: 0.35
+unsup_con_weight: 0.65
+unsup_cls_weight: 0.65
+g_clipping: False
+lr_decay_proj_layer: 1
+warmup_teacher_temp: 0.07
+teacher_temp: 0.04
+student_temp: 0.1
+warmup_teacher_temp_epochs: 30
+memax_weight: 1
+prior_temp: 0.1
+avg_temp: 0.1
+distance_type: 'l2'
+
+softmax_prior: False
+label_smoothing: True
+smooth_max: 0.9
+shuffle_unseen_prior: False
+reg_classes: 5
+
+pretrained_dir: dino
+
+local_gcl_weight: 1
+train_gmm: False

@@ -1,0 +1,7 @@
+## Evaler ##
+type: LogitEvaler
+freq: 1
+batch_size: 1024
+cluster_eval: feats
+local:
+  plot_confusion: True

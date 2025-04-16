@@ -1,14 +1,13 @@
 
 #################### Default Setup ####################
 wandb: True
-seed: 0
+seed: 1
 enable_benchmark: True
 use_amp: True
 multiprocessing: False
 main_gpu: '0'
 num_workers: 0
 pin_memory: True
-refactoring: True
 verbose: False
 # method_name: FedAvg
 remark: ""
@@ -18,7 +17,8 @@ exp_name: base
 output_model_path: 'res18.pt'
 save_freq: 1000
 batch_size: 50
-save_test: False 
+save_test: False
+eval_first: False
 
 ## Resume
 load_model_path: False      # ====> may be like ./checkpoints/CIFAR100/iid/iid_base/res18.pt. use command line +load_model_path=(path)
@@ -32,11 +32,11 @@ wandb_resume_id: False
 # local_lr: 0.1
 # local_epochs: 5
 # global_lr: 1.0
-# global_rounds: 1500
+# global_rounds: 1500 
 
 
 ###### wandb && logging ######
-project: "federated_learning"
+project: "FGCD"
 # log_dir: '/131_data/checkpoints/bc_fl'
 log_dir: './checkpoints' # 131_data
 
@@ -49,30 +49,39 @@ log_dir: './checkpoints' # 131_data
 
 #################### Model ####################
 model:
-  name: "ResNet18_base"
-  pretrained: False
+  name: "vit_base"
+  pretrained: True
+  feat_dim: 768
+  mlp_out_dim: 65536
+  num_mlp_layers: 3
   l2_norm: False
-  use_bn_layer: False
-  freeze_layer: False  # or ['fc']
-  last_feature_dim: 512
+  training_layers: False  # or ['fc']
+  grad_from_block: 11
+  fft: False
+  tune_normalization_layer: False
+  tune_dino_head_norm: False
+  num_semantics: 10
+  cancel_last_layer: False
+
 
 #################### Data Split ####################
 split:
   mode: 'dirichlet'
-  alpha: 0.3
-  class_per_client: 0 # only for skew mode
   unbalanced: False
+  alpha: 0.2
   overlap_ratio: 0.0
   create_client_dataset: False
-  limit_total_classes: 3
-  limit_number_per_class : 1000
-  toy_noniid_rate : 0.3
+  class_per_client: 0 # only for skew mode
+  limit_total_classes: 3 # only for toy non_iid
+  limit_number_per_class: 1000 # only for toy non_iid
+  toy_noniid_rate: 0.3 # only for toy non_iid
+  target_transform: True
 
 #################### Optimizer ####################
 optimizer:
   name: sgd
   momentum: 0.0
-  wd: 1e-3
+  wd: 5e-5
 
 #################### Method ####################
 
@@ -90,22 +99,17 @@ eval:
   retrieval_freq: 0
   batch_size: 128
 
-umap:
-  freq: 20
-  samples_per_class: 100
-  umap_dim: 2
-  draw_classes : 10
-  
-collapse:
-  freq: 20
+analysis: True
 
-svd:
-  freq: 100
-  stride: 1
+confusion:
+  freq: 0
 
-minority_collapse : False
-
-save_for_distance_freq: 50
+server_umap:
+  plot_locals: False
+  freq: 0
+  draw_classes: 10
+  samples_per_class: 50
+  umap_dim: 3
 
 landscape:
   freq: 0
@@ -136,13 +140,14 @@ compare_base_is_FedAvg : False
 analysis_mode: '' # option: _flatten_feature, 
 
 
-analysis: True
+
 
 defaults:
+  - _self_
   - trainer: base
   - client: base
   - evaler: base
-  - dataset: cifar100
+  - dataset: cifar10
   - client_compare: base
   - server: base
   - override hydra/job_logging: colorlog_custom

@@ -28,6 +28,8 @@ def load_checkpoint(model_path: Path, jit: bool = True) -> Dict:
 
 def save_checkpoint(model: Union[nn.Module, torch.jit.ScriptModule],
                     # optimizer: Union[nn.Module, torch.jit.ScriptModule],
+                    local_models,
+                    prev_global_model_state,
                     output_model_path: Path,
                     epoch: int,
                     save_torch: bool = False,
@@ -71,6 +73,8 @@ def save_checkpoint(model: Union[nn.Module, torch.jit.ScriptModule],
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
+            'local_models_dict': local_models,
+            'prev_state_dict': prev_global_model_state,
         }, save_torch_path)
         logger.warning(f"Saved torch model at {save_torch_path}")
 

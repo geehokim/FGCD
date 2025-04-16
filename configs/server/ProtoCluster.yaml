@@ -1,0 +1,8 @@
+## Server ##
+type: ServerClusteringClsWeights
+clustering_alg: sinkhorn
+momentum: -1
+start_update: 1
+
+# Update classifier weight using global centroids
+use_global_centroids_as_classifier: True

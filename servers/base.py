@@ -6,15 +6,127 @@ import time
 import matplotlib.pyplot as plt
 import torch.multiprocessing as mp
 from sklearn.manifold import TSNE
+from sklearn.cluster import BisectingKMeans
 
 from utils import *
 from utils.metrics import evaluate
 from utils.visualize import __log_test_metric__, umap_allmodels, cka_allmodels, log_fisher_diag
 from models import build_encoder, get_model
 from typing import Callable, Dict, Tuple, Union, List
+from utils import linear_assignment
+from finch import FINCH
+import wandb
+import torch.nn.functional as F
+import sys
+from scipy.cluster.hierarchy import linkage, fcluster
+from sklearn.cluster import KMeans
 
 
 from servers.build import SERVER_REGISTRY
+
+
+# Sinkhorn Knopp
+def sknopp(cZ, lamd=25, max_iters=100):
+    with torch.no_grad():
+        N_samples, N_centroids = cZ.shape # cZ is [N_samples, N_centroids]
+        probs = F.softmax(cZ * lamd, dim=1).T # probs should be [N_centroids, N_samples]
+
+        r = torch.ones((N_centroids, 1), device=probs.device) / N_centroids # desired row sum vector
+        c = torch.ones((N_samples, 1), device=probs.device) / N_samples # desired col sum vector
+
+        inv_N_centroids = 1. / N_centroids
+        inv_N_samples = 1. / N_samples
+
+        err = 1e3
+        for it in range(max_iters):
+            r = inv_N_centroids / (probs @ c)  # (N_centroids x N_samples) @ (N_samples, 1) = N_centroids x 1
+            c_new = inv_N_samples / (r.T @ probs).T  # ((1, N_centroids) @ (N_centroids x N_samples)).t() = N_samples x 1
+            if it % 10 == 0:
+                err = torch.nansum(torch.abs(c / c_new - 1))
+            c = c_new
+            if (err < 1e-2):
+                break
+
+        # inplace calculations.
+        probs *= c.squeeze()
+        probs = probs.T # [N_samples, N_centroids]
+        probs *= r.squeeze()
+
+        return probs * N_samples # Soft assignments
+
+
+
+def format_time(seconds):
+    days = int(seconds / 3600/24)
+    seconds = seconds - days*3600*24
+    hours = int(seconds / 3600)
+    seconds = seconds - hours*3600
+    minutes = int(seconds / 60)
+    seconds = seconds - minutes*60
+    secondsf = int(seconds)
+    seconds = seconds - secondsf
+    millis = int(seconds*1000)
+    f = ''
+    i = 1
+    if days > 0:
+        f += str(days) + 'D'
+        i += 1
+    if hours > 0 and i <= 2:
+        f += str(hours) + 'h'
+        i += 1
+    if minutes > 0 and i <= 2:
+        f += str(minutes) + 'm'
+        i += 1
+    if secondsf > 0 and i <= 2:
+        f += str(secondsf) + 's'
+        i += 1
+    if millis > 0 and i <= 2:
+        f += str(millis) + 'ms'
+        i += 1
+    if f == '':
+        f = '0ms'
+    return f
+
+######### Progress bar #########
+term_width = 150 
+TOTAL_BAR_LENGTH = 30.
+last_time = time.time()
+begin_time = last_time
+def progress_bar(current, total, msg=None):
+    global last_time, begin_time
+    if current == 0:
+        begin_time = time.time()  # Reset for new bar.
+    cur_len = int(TOTAL_BAR_LENGTH*current/total)
+    rest_len = int(TOTAL_BAR_LENGTH - cur_len) - 1
+    sys.stdout.write(' [')
+    for i in range(cur_len):
+        sys.stdout.write('=')
+    sys.stdout.write('>')
+    for i in range(rest_len):
+        sys.stdout.write('.')
+    sys.stdout.write(']')
+    cur_time = time.time()
+    step_time = cur_time - last_time
+    last_time = cur_time
+    tot_time = cur_time - begin_time
+    L = []
+    L.append('  Step: %s' % format_time(step_time))
+    L.append(' | Tot: %s' % format_time(tot_time))
+    if msg:
+        L.append(' | ' + msg)
+    msg = ''.join(L)
+    sys.stdout.write(msg)
+    for i in range(term_width-int(TOTAL_BAR_LENGTH)-len(msg)-3):
+        sys.stdout.write(' ')
+    # Go back to the center of the bar.
+    for i in range(term_width-int(TOTAL_BAR_LENGTH/2)+2):
+        sys.stdout.write('\b')
+    sys.stdout.write(' %d/%d ' % (current+1, total))
+    if current < total-1:
+        sys.stdout.write('\r')
+    else:
+        sys.stdout.write('\n')
+    sys.stdout.flush()
 
 @SERVER_REGISTRY.register()
 class Server():
@@ -22,12 +134,222 @@ class Server():
     def __init__(self, args):
         self.args = args
         return
+
+    def aggregate(self, local_weights, local_deltas, local_optimizer_state_dicts, client_ids, model_dict, local_centroids_list=None, local_labelled_centroids_list=None, local_labelled_class_set_list=None, current_lr=0, epoch=0,
+                  local_novel_class_mask_list=None):
+        C = len(client_ids)
+        local_act_protos = [ i.item() for i in local_weights['proj_layer.act_protos'] ]
+        local_prototypes = [ l_weight[:local_act_protos[i]] for i, l_weight in enumerate(local_weights['proj_layer.local_prototypes']) ]
+
+        for param_key in local_weights:            
+            local_weights[param_key] = sum(local_weights[param_key]) / C
+        
+        
+        # for param_key in local_optimizer_state_dicts:
+        #     momentum_buffers = []
+        #     for state in local_optimizer_state_dicts[param_key]:
+        #         momentum_buffers.append(state['momentum_buffer'])
+        #     momentum_buffers = torch.stack(momentum_buffers)
+        #     local_optimizer_state_dicts[param_key] = {'momentum_buffer': momentum_buffers.sum(dim=0) / C}
+
+        return local_weights, local_prototypes, None
+
+@SERVER_REGISTRY.register()
+class ServerNovelClustering(Server):
+
+    def __init__(self, args):
+        super().__init__(args)
+
+    def aggregate(self, local_weights, local_deltas, client_ids, global_model, local_novel_cluster_means_list=None, local_novel_cluster_targets_list=None, local_labelled_class_set_list=None, current_lr=0, epoch=0,
+                  local_novel_class_mask_list=None):
+        C = len(client_ids)
+        local_classifier_weights = None
+        for param_key in local_weights:
+            if 'original1' in param_key:
+                local_classifier_weights = copy.deepcopy(local_weights[param_key])
+            local_weights[param_key] = sum(local_weights[param_key]) / C
+        
+        #if len(local_novel_cluster_means_list) > 0:
+        if None not in local_novel_cluster_means_list:
+            print("global clustering")
+            # Filter out None values and concatenate only tensors
+            valid_means = [means for means in local_novel_cluster_means_list if means is not None]
+            valid_targets = [targets for targets in local_novel_cluster_targets_list if targets is not None]
+            novel_cluster_means = torch.cat(local_novel_cluster_means_list, dim=0)
+            novel_cluster_targets = torch.cat(local_novel_cluster_targets_list, dim=0)
+            # global_clustering happens on the server
+            if self.args.server.clustering_after_aggregation:
+                global_model.global_centroids.weight.data.copy_(local_weights['proj_layer.last_layer.parametrizations.weight.original1'][len(self.args.dataset.seen_classes):])
+                
+            global_model.global_clustering(novel_cluster_means, current_lr)
+            local_weights['global_centroids.weight'] = global_model.global_centroids.weight.data.clone()
+            w = None
+            # local_classifier_weights = torch.stack(local_classifier_weights)
+            # feat_dim = local_classifier_weights.size(-1)
+            # local_classifier_weights_novel = local_classifier_weights[:, len(self.args.dataset.seen_classes):, :].reshape(-1, feat_dim)
+            # local_novel_class_mask = torch.cat(local_novel_class_mask_list, dim=0).cpu()
+            # print('local_novel_class_mask: ', local_novel_class_mask)
+            # filtered_classifier_weights = local_classifier_weights_novel[local_novel_class_mask]
+            # global_model.global_clustering(filtered_classifier_weights, current_lr)
+            # local_weights['global_centroids.weight'] = global_model.global_centroids.weight.data.clone()
+            # w = None
+        else:
+            w = None
+
+        return local_weights, w
     
-    def aggregate(self, local_weights, local_deltas, client_ids, model_dict, current_lr):
+
+    
+
+@SERVER_REGISTRY.register()
+class ServerClusteringClassifierWeights(Server):
+
+    def __init__(self, args):
+        super().__init__(args)
+
+    def aggregate(self, local_weights, local_deltas, client_ids, global_model, local_novel_cluster_means_list=None, local_novel_cluster_targets_list=None, local_labelled_class_set_list=None, current_lr=0, epoch=0,
+                  local_novel_class_mask_list=None):
+        C = len(client_ids)
+        local_classifier_weights = None
+        for param_key in local_weights:
+            if 'original1' in param_key:
+                local_classifier_weights = copy.deepcopy(local_weights[param_key])
+            local_weights[param_key] = sum(local_weights[param_key]) / C
+        
+        local_classifier_weights = torch.cat(local_classifier_weights, dim=0)
+        global_model.global_clustering_all(local_classifier_weights)
+        local_weights['global_centroids_all.weight'] = global_model.global_centroids_all.weight.data.clone()
+        w = None
+
+        return local_weights, w
+    
+    
+
+@SERVER_REGISTRY.register()
+class CCServer():
+
+    def __init__(self, args):
+        self.args = args
+        self.server_config = args.server
+        return
+
+    def aggregate(self, local_weights, local_deltas, client_ids, model_dict, current_lr, epoch=0):
         C = len(client_ids)
         for param_key in local_weights:
-            local_weights[param_key] = sum(local_weights[param_key])/C
+            local_weights[param_key] = sum(local_weights[param_key]) / C
         return local_weights
+
+    def aggregate_local_labelled_centroids(self, local_weights, local_labelled_centroids_list, client_ids):
+
+        # local_labelled_centroids
+        all_local_labelled_centroids = {}
+        for i in range(len(self.args.dataset.seen_classes)):
+            all_local_labelled_centroids[i] = []
+        for local_labelled_centroids in local_labelled_centroids_list:
+            for class_id in local_labelled_centroids:
+                all_local_labelled_centroids[class_id].append(local_labelled_centroids[class_id])
+        aggregated_labelled_centroids = []
+        for i in range(len(self.args.dataset.seen_classes)):
+            total = 0
+            tmp_feat = 0
+            for (num, feat) in all_local_labelled_centroids[i]:
+                total += num
+                tmp_feat += num * feat
+            tmp_feat = tmp_feat / total
+            aggregated_labelled_centroids.append(tmp_feat)
+        aggregated_labelled_centroids = torch.stack(aggregated_labelled_centroids, dim=0)
+
+        return aggregated_labelled_centroids
+
+    def get_local_centroids(self, local_weights, local_centroids_list, client_ids):
+
+        all_local_centroids = []
+        for local_centroids in local_centroids_list:
+            cts = list(local_centroids.values())
+            cts = torch.stack(cts, dim=0)
+            all_local_centroids.append(cts)
+
+        all_local_centroids = torch.cat(all_local_centroids, dim=0)
+        return all_local_centroids
+
+    def aggregate_centroids(self, local_weights, all_local_centroids, aggregated_local_labelled_centroids,
+                                                                client_ids):
+        num_classes = len(self.args.dataset.seen_classes) + len(self.args.dataset.unseen_classes)
+        if self.server_config.centroid_aggre_type == 'local_centroids_SK':
+            target_centroids = nn.Linear(768, num_classes)
+            N = all_local_centroids.shape[0]  # Z has dimensions [m_size * n_clients, D]
+            # Optimizer setup
+            optimizer = torch.optim.SGD(target_centroids.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
+            train_loss = 0.
+            total_rounds = 500
+            angular_criterion = AngularPenaltySMLoss()
+            for round_idx in range(total_rounds):
+                with torch.no_grad():
+                    # Cluster assignments from Sinkhorn Knopp
+                    SK_assigns = sknopp(target_centroids(all_local_centroids))
+                    # print(SK_assigns.size())
+                    # print(SK_assigns)
+                # Zero grad
+                optimizer.zero_grad()
+                # Predicted cluster assignments [N, N_centroids] = local centroids [N, D] x global centroids [D, N_centroids]
+                probs1 = F.softmax(target_centroids(F.normalize(all_local_centroids, dim=1)) / 0.1, dim=1)
+                ## 增加 Prototype距离 ##
+                # cos_output = self.centroids(F.normalize(Z1, dim=1))
+                # SK_target = np.argmax(SK_assigns.cpu().numpy(), axis=1)
+                # angular_loss = angular_criterion(cos_output, SK_target)
+                # print("angular_loss: ", angular_loss)
+                ######################
+                # Match predicted assignments with SK assignments
+                cos_loss = F.cosine_similarity(SK_assigns, probs1, dim=-1).mean()
+                loss = - cos_loss  # + angular_loss
+                print("F.cosine_similarity: ", cos_loss)
+                # Train
+                loss.backward()
+                optimizer.step()
+                with torch.no_grad():
+                    # self.centroids.weight.copy_(self.centroids.weight.data.clone()) # Not Normalize centroids
+                    target_centroids.weight.copy_(F.normalize(target_centroids.weight.data.clone(), dim=1))  # Normalize centroids
+                    train_loss += loss.item()
+            result_centroids = target_centroids.weight.data.clone()
+        elif self.server_config.centroid_aggre_type == 'local_centroids_finch':
+            c, num_clust, req_c = FINCH(all_local_centroids.numpy(), req_clust=num_classes, distance='cosine', verbose=False)
+            new_cws = {}
+            for i in range(num_classes):
+                new_cws[i] = []
+            for i, idx in enumerate(req_c):
+                new_cws[idx].append(all_local_centroids[i])
+            aggregated_cws = []
+            for i in new_cws:
+                mean_centroids = torch.stack(new_cws[i]).mean(0)
+                aggregated_cws.append(mean_centroids)
+
+            aggregated_cws = torch.stack(aggregated_cws)
+            aggregated_cws = F.normalize(aggregated_cws, dim=-1)
+            result_centroids = aggregated_cws
+        else:
+            raise NotImplementedError
+
+        aggregated_local_labelled_centroids = F.normalize(aggregated_local_labelled_centroids, dim=1)
+        sim_mat = torch.matmul(aggregated_local_labelled_centroids.cpu(), result_centroids.T)
+        row_ind, col_ind = linear_assignment(sim_mat.max() - sim_mat)
+
+        # 주어진 인덱스
+        indices = torch.tensor(col_ind)
+
+        # 주어진 인덱스에 해당하는 행을 선택
+        selected_rows = result_centroids[indices]
+
+        # 나머지 인덱스 생성
+        remaining_indices = torch.tensor([i for i in range(num_classes) if i not in indices])
+
+        # 나머지 행 선택
+        remaining_rows = result_centroids[remaining_indices]
+
+        # 선택된 행과 나머지 행을 연결
+        aligned_centroids = torch.cat([selected_rows, remaining_rows], dim=0)
+        return aligned_centroids
+
+
     
 
 @SERVER_REGISTRY.register()
@@ -56,7 +378,7 @@ class ServerM(Server):
         model.load_state_dict(sending_model_dict)
         return copy.deepcopy(model)
     
-    def aggregate(self, local_weights, local_deltas, client_ids, model_dict, current_lr):
+    def aggregate(self, local_weights, local_deltas, client_ids, model_dict, current_lr, epoch=0):
         C = len(client_ids)
         for param_key in local_weights:
             local_weights[param_key] = sum(local_weights[param_key])/C
@@ -94,7 +416,7 @@ class FedACG_evalpoint_accel(Server):
         self.global_momentum = global_momentum
 
     @torch.no_grad()    
-    def aggregate(self, local_weights, local_deltas, client_ids, model_dict, current_lr):
+    def aggregate(self, local_weights, local_deltas, client_ids, model_dict, current_lr, epoch=0):
         C = len(client_ids)
         for param_key in local_weights:
             local_weights[param_key] = sum(local_weights[param_key])/C
@@ -147,7 +469,7 @@ class SNAG(Server):
         return copy.deepcopy(model)
     
     @torch.no_grad()
-    def aggregate(self, local_weights, local_deltas, client_ids, model_dict, current_lr):
+    def aggregate(self, local_weights, local_deltas, client_ids, model_dict, current_lr, epoch=0):
         C = len(client_ids)
         for param_key in local_weights:
             local_weights[param_key] = sum(local_weights[param_key])/C

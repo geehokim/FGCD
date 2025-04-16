@@ -27,7 +27,7 @@ from trainers.build import TRAINER_REGISTRY
 from servers import Server
 from clients import Client
 
-from utils import DatasetSplit, DatasetSplitMultiViews, get_dataset
+from datasets.data_utils import DatasetSplit, DatasetSplitMultiViews, get_local_datasets
 from utils.logging_utils import AverageMeter
 
 from torch.utils.data import DataLoader
@@ -35,20 +35,13 @@ from torch.utils.data import DataLoader
 from utils import terminate_processes, initalize_random_seed, save_checkpoint
 from omegaconf import DictConfig,OmegaConf
 
-
-
 from loss_landscape import net_plotter, plot_2D, plot_surface
 from loss_landscape.projection import setup_PCA_directions_fed, project_fed
 import loss_landscape.projection as proj
 from loss_landscape.plot_surface import crunch_fed
 
-
-
 from netcal.metrics import ECE
 import matplotlib.pyplot as plt
-
-
-
 
 
 @TRAINER_REGISTRY.register()
@@ -69,7 +62,6 @@ class Trainer():
         self.device = device
         self.model = model
 
-
         self.checkpoint_path = Path(self.args.checkpoint_path)
         mode = self.args.split.mode 
         if self.args.split.mode == 'dirichlet':
@@ -78,7 +70,6 @@ class Trainer():
             mode += str(self.args.split.class_per_client)
         self.exp_path = self.checkpoint_path / self.args.dataset.name / mode / self.args.exp_name
         logger.info(f"Exp path : {self.exp_path}")
-
 
         ### training config
         trainer_args = self.args.trainer
@@ -89,21 +80,13 @@ class Trainer():
         self.lr = trainer_args.local_lr
         self.local_lr_decay = trainer_args.local_lr_decay
 
-
-        self.clients: List[Client] = [client_type(self.args, client_index=c, model=copy.deepcopy(self.model)) for c in range(self.args.trainer.num_clients)]
-        self.server = server
-        if self.args.server.momentum > 0:
-            self.server.set_momentum(self.model)
-
-        #self.datasets = datasets
+        # self.datasets = datasets
         self.datasets = self.get_datasets(datasets)
-        self.local_dataset_split_ids = get_dataset(self.args, self.datasets['train'], mode=self.args.split.mode)
+        self.local_dataset_split_ids = get_local_datasets(self.args, self.datasets['train'], mode=self.args.split.mode)
 
         test_loader = DataLoader(self.datasets["test"],
-                                batch_size=args.evaler.batch_size if args.evaler.batch_size > 0 else args.batch_size,
-                                shuffle=False, num_workers=args.num_workers)
-        #print(test_loader)
-        #print(args.evaler.batch_size)
+                                 batch_size=args.evaler.batch_size if args.evaler.batch_size > 0 else args.batch_size,
+                                 shuffle=False, num_workers=args.num_workers)
         eval_device = self.device if not self.args.multiprocessing else torch.device(f'cuda:{self.args.main_gpu}')
         eval_params = {
             "test_loader": test_loader,
@@ -114,21 +97,22 @@ class Trainer():
         }
         self.eval_params = eval_params
         self.eval_device = eval_device
-        
+
         # self.evaler = evaler_type(test_loader=test_loader, device=eval_device, args=args)
         self.evaler = evaler_type(**eval_params)
+
+        self.clients: List[Client] = [client_type(self.args, client_index=c, model=copy.deepcopy(self.model), evaler=self.evaler) for c in range(self.args.trainer.num_clients)]
+        self.server = server
+        if self.args.server.momentum > 0:
+            self.server.set_momentum(self.model)
+
         logger.info(f"Trainer: {self.__class__}, client: {client_type}, server: {server.__class__}, evaler: {evaler_type}")
 
         self.start_round = 0
         if self.args.get('load_model_path'):
             self.load_model()
 
-
-
     def local_update(self, device, task_queue, result_queue):
-        if self.args.multiprocessing:
-            torch.cuda.set_device(device)
-            initalize_random_seed(self.args)
 
         while True:
             task = task_queue.get()
@@ -137,10 +121,11 @@ class Trainer():
             client = self.clients[task['client_idx']]
             # logger.info(f"[C{task['client_idx']}] before dataset split")
 
-            if self.args.dataset.get('num_views'):
-                local_dataset = DatasetSplitMultiViews(self.datasets['train'], idxs=self.local_dataset_split_ids[task['client_idx']])
-            else:
-                local_dataset = DatasetSplit(self.datasets['train'], idxs=self.local_dataset_split_ids[task['client_idx']])
+            local_dataset = self.local_dataset_split_ids[task['client_idx']]
+            # if self.args.dataset.get('num_views'):
+            #     local_dataset = DatasetSplitMultiViews(self.datasets['train'], idxs=self.local_dataset_split_ids[task['client_idx']])
+            # else:
+            #     local_dataset = DatasetSplit(self.datasets['train'], idxs=self.local_dataset_split_ids[task['client_idx']])
             # logger.info(f"[C{task['client_idx']}] after dataset split")
             setup_inputs = {
                 # 'model': copy.deepcopy(task['model']) if self.args.multiprocessing else copy.deepcopy(self.model),
@@ -177,9 +162,10 @@ class Trainer():
             for p in processes:
                 p.start()
 
+        if self.args.eval_first:
+            self.evaluate(epoch=0, local_datasets=None)
 
         for epoch in range(self.start_round, self.global_rounds):
-
             self.lr_update(epoch=epoch)
 
             global_state_dict = copy.deepcopy(self.model.state_dict())
@@ -201,7 +187,6 @@ class Trainer():
             logger.info(f"Global epoch {epoch}, Selected client : {selected_client_ids}")
 
             current_lr = self.lr
-
             local_weights = defaultdict(list)
             local_loss_dicts = defaultdict(list)
             local_deltas = defaultdict(list)
@@ -220,6 +205,7 @@ class Trainer():
                 assert(self.args.server.momentum > 0)
                 self.model= copy.deepcopy(self.server.FedACG_lookahead(copy.deepcopy(self.model)))
                 global_state_dict = copy.deepcopy(self.model.state_dict())
+
 
 
             # Client-side
@@ -276,7 +262,7 @@ class Trainer():
                                                               selected_client_ids, copy.deepcopy(global_state_dict), current_lr)
             self.model.load_state_dict(updated_global_state_dict)
 
-            local_datasets = [DatasetSplit(self.datasets['train'], idxs=self.local_dataset_split_ids[client_id]) for client_id in selected_client_ids]
+            local_datasets = [self.local_dataset_split_ids[client_id] for client_id in selected_client_ids]
 
             # Logging
             wandb_dict = {loss_key: np.mean(local_loss_dicts[loss_key]) for loss_key in local_loss_dicts}
@@ -288,31 +274,7 @@ class Trainer():
                 self.evaluate(epoch=epoch, local_datasets=local_datasets)
                 
             if self.args.analysis:
-                if self.args.eval.retrieval_freq > 0 and epoch % self.args.eval.retrieval_freq == 0:
-                    self.evaluate_retrieval(epoch=epoch, local_datasets=local_datasets)
-
-                if epoch > 0 and self.args.eval.local_freq > 0 and epoch % self.args.eval.local_freq == 0:
-                    self.evaluate_local(epoch=epoch, local_models=local_models)
-
-                if epoch > 0 and self.args.svd.freq > 0 and epoch % self.args.svd.freq == 0:
-                # if self.args.svd.freq > 0 and epoch > 0 and epoch % self.args.svd.freq == 0:
-                    self.evaluate_svd(epoch=epoch, local_models=local_models, global_model=self.model, local_datasets=local_datasets)
-
-                # if epoch > 0 and self.args.umap.freq > 0 and epoch % self.args.umap.freq == 0:
-                if self.args.umap.freq > 0 and epoch % self.args.umap.freq == 0:
-                    self.visualize_umap(global_model=self.model, local_models=local_models, local_datasets=local_datasets, epoch=epoch)
-                    # self.wandb_log(self.evaler.visualize_umap(global_model=self.model, local_models=local_models, epoch=epoch), step=epoch)
-
-                if self.args.landscape.freq > 0 and epoch % self.args.landscape.freq == 0:
-                    self.visualize_landscape(global_model=self.model, local_models=local_models, prev_model_weight=prev_model_weight, epoch=epoch)
-
-                if self.args.collapse.freq > 0 and epoch % self.args.collapse.freq == 0:
-                    self.evaluate_minority_collapse(prev_model_weight=prev_model_weight, local_models=local_models, local_datasets=local_datasets, epoch=epoch)
-
-            # except:
-            #     self.model.to(model_device)
-            #     self.model.train()
-            #     pass
+                pass
 
             if (self.args.save_freq > 0 and (epoch + 1) % self.args.save_freq == 0) or (epoch + 1 == self.args.trainer.global_rounds):
                 self.save_model(epoch=epoch)
@@ -330,7 +292,12 @@ class Trainer():
     def lr_update(self, epoch: int) -> None:
         # TODO: adopt other lr policy
         # self.lr = self.lr * (self.lr_decay) ** (epoch)
-        self.lr = self.args.trainer.local_lr * (self.local_lr_decay) ** (epoch)
+        if self.args.trainer.lr_scheduler == 'cosanneal':
+            self.lr = self.args.trainer.local_lr * 1e-3 + 0.5 * (self.args.trainer.local_lr - self.args.trainer.local_lr * 1e-3) * (1 + torch.cos(torch.tensor(epoch * torch.pi / self.args.trainer.global_rounds)))
+            self.lr = self.lr.item()
+            logger.info(f'Current Lr: {self.lr}')
+        else:
+            self.lr = self.args.trainer.local_lr * (self.local_lr_decay) ** (epoch)
         return
     
 
@@ -382,71 +349,25 @@ class Trainer():
     def evaluate(self, epoch: int, local_datasets: List[torch.utils.data.Dataset] = None) -> Dict:
 
         results = self.evaler.eval(model=self.model, epoch=epoch)
-        acc = results["acc"]
-        entropy = results["entropy"]
-        ece = results["ece"]
-        ece_diagram = results["ece_diagram"]
+        all_acc = results["all_acc"]
+        new_acc = results["new_acc"]
+        old_acc = results["old_acc"]
 
         wandb_dict = {
-            f"acc/{self.args.dataset.name}": acc,
-            f"confusion_matrix/{self.args.dataset.name}" : results["confusion_matrix"] if "confusion_matrix" in results else None,
-            f'entropy/{self.args.dataset.name}': entropy,
-            f'ece/{self.args.dataset.name}': ece,
+            f"all_acc/{self.args.dataset.name}": all_acc,
+            f"old_acc/{self.args.dataset.name}": old_acc,
+            f"new_acc/{self.args.dataset.name}": new_acc,
             }
-
-        if epoch % 10 == 0:
-            wandb_dict.update({f'ece_diagram/{self.args.dataset.name}': wandb.Image(ece_diagram)})
-
-        # if self.args.get('debugs'):
-        #     breakpoint()
         
-        logger.warning(f'[Epoch {epoch}] Test Accuracy: {acc:.2f}%, Rel Entropy: {entropy:.3f}, ECE: {100*ece:.2f}')
-
-        # Local major/minor accuracies
-        class_accs = results["class_acc"]
-        subset_results = self._evaluate_subset(epoch=epoch, class_accs=class_accs, local_datasets=local_datasets)
-        wandb_dict.update(subset_results)
+        logger.warning(f'[Epoch {epoch}] Test ALL Acc: {all_acc:.2f}%, OLD Acc: {old_acc:.2f}%, NEW Acc: {new_acc:.2f}%')
 
         plt.close()
 
-        # seen_acc = major_acc = minor_acc = missing_acc = minor_seen_acc = -1
-        # if local_datasets is not None:
-        #     seen_accs = []
-        #     major_accs, minor_accs, missing_accs, minor_seen_accs = [], [], [], []
-        #     for local_dataset in local_datasets:
-        #         local_classes = [int(i) for i in local_dataset.class_dict.keys()]
-
-
-        #         num_classes = len(local_dataset.dataset.classes)
-        #         num_local_classes = len(local_dataset.class_dict.keys())
-        #         major_classes = [int(key) for key in local_dataset.class_dict if local_dataset.class_dict[key] >= len(local_dataset)/num_local_classes]
-        #         minor_seen_classes = [int(key) for key in local_dataset.class_dict if local_dataset.class_dict[key] < len(local_dataset)/num_local_classes]
-        #         missing_classes = [i for i in range(num_classes) if str(i) not in local_dataset.class_dict]
-        #         minor_classes = minor_seen_classes + missing_classes
-
-        #         class_accs = results["class_acc"]
-        #         seen_accs.append(torch.mean(class_accs[local_classes]))
-        #         major_accs.append(torch.mean(class_accs[major_classes]))
-        #         minor_accs.append(torch.mean(class_accs[minor_classes]))
-        #         missing_accs.append(torch.mean(class_accs[missing_classes]))
-        #         minor_seen_accs.append(torch.mean(class_accs[minor_seen_classes]))
-
-        #     seen_acc = np.mean(seen_accs)
-        #     major_acc, minor_acc, missing_acc, minor_seen_acc = np.mean(major_accs), np.mean(minor_accs), np.mean(missing_accs), np.mean(minor_seen_accs)
-        #     wandb_dict.update({
-        #         f"seen_acc/{self.args.dataset.name}": seen_acc, #deprecated
-
-        #         f"acc/{self.args.dataset.name}/seen": seen_acc,
-        #         f"acc/{self.args.dataset.name}/major": major_acc,
-        #         f"acc/{self.args.dataset.name}/minor": minor_acc,
-        #         f"acc/{self.args.dataset.name}/missing": missing_acc,
-        #         f"acc/{self.args.dataset.name}/minor_seen": minor_seen_acc,
-        #         })
-        
-
         self.wandb_log(wandb_dict, step=epoch)
         return {
-            "acc": acc
+            "all_acc": all_acc,
+            "new_acc": new_acc,
+            "old_acc": old_acc
         }
 
     def _evaluate_subset(self, epoch: int, class_accs: List, local_datasets: List[torch.utils.data.Dataset] = None) -> Dict:

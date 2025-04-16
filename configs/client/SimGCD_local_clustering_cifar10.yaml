@@ -1,0 +1,38 @@
+## Client ##
+type: SimGCD_Local_Clustering_Client
+n_views: 2
+#temperature: 0.07
+unsup_temperature: 1
+sup_temperature: 0.07 # default
+sup_con_weight: 0.35
+sup_cls_weight: 0.35
+unsup_con_weight: 0.65
+unsup_cls_weight: 0.65
+g_clipping: True
+proj_layer_lr_decay: 1
+warmup_teacher_temp: 0.07
+teacher_temp: 0.04
+warmup_teacher_temp_epochs: 30
+
+decorr_loss_weight: 0.00
+
+distance_type: 'l2'
+memax_weight: 1
+
+softmax_prior: False
+prior_temp: 0.1
+avg_temp: 0.1
+
+label_smoothing: True
+smooth_max: 0.8
+shuffle_unseen_prior: False
+reg_classes: 5
+
+
+update_prior: True
+start_update: 1
+align_gt: False
+update_prior_freq: 1
+update_lambda: 0.8
+
+freeze_proto: False

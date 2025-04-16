@@ -23,7 +23,7 @@ from evalers.build import EVALER_REGISTRY
 from servers import Server
 from clients import Client
 
-from utils import DatasetSplit, get_dataset
+from datasets.data_utils  import DatasetSplit
 from utils.logging_utils import AverageMeter
 
 from torch.utils.data import DataLoader

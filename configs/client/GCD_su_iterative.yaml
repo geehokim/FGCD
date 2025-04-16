@@ -1,0 +1,8 @@
+## Client ##
+type: GCDSUIterativeClient
+n_views: 2
+#temperature: 0.07
+temperature: 1.0
+sup_con_weight: 0.35
+g_clipping: True
+freq_rep_learn: 1

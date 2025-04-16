@@ -1,0 +1,9 @@
+## Client ##
+type: GCDClient2
+n_views: 2
+#temperature: 0.07
+unsup_temperature: 0.07
+sup_temperature: 0.05
+sup_con_weight: 0.35
+g_clipping: True
+proj_layer_lr_decay: 0.1

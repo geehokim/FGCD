@@ -1,0 +1,101 @@
+## Client ##
+type: SimGCDOnlinePriorMatchingSemiClients
+n_views: 2
+distance_type: 'jsd_noclamp'
+sampler: 'weighted'
+data_range: "all"
+num_instances: 2
+update_prior_freq: 1
+reiniit_labeled_prototypes: False
+
+
+top_k: 10
+tao_f: 0.4
+k2: 2
+
+g_clipping: True
+unsup_temperature: 1
+sup_temperature: 0.07 # default
+sup_con_weight: 0.35
+sup_cls_weight: 0.35
+unsup_con_weight: 0.65
+unsup_cls_weight: 0.65
+
+warmup_teacher_temp: 0.07
+teacher_temp: 0.04
+student_temp: 0.1
+warmup_teacher_temp_epochs: 30
+memax_weight: 1
+prior_temp: 0.1
+avg_temp: 0.1
+
+
+softmax_prior: False
+label_smoothing: True
+smooth_max: 0.995
+shuffle_unseen_prior: False
+
+start_update: 0
+update_alg: finch
+
+
+align_gt: False
+align_type: 'centroid'
+
+
+update_lambda: 0.9
+
+
+log_div_from_gt: True
+soft_preds_temp: 0.04
+
+ce_type: ce
+margin_m: 0.5
+margin_s: 10
+
+# OOD-FINCH
+lambda_param: 1
+
+# estimate num clusters
+est_num_clusters: False
+k_mode: 'sil'
+clust_feats: 'feats'
+
+# Proto clustering
+get_local_centroid: True
+local_centroid_type: 'finch'
+
+
+# Class association loss
+centroids_cls_weight: 0.0
+
+# tolerance
+tolerance: 20
+# alignment threshold
+align_threshold: 10
+
+
+## Minimum labelled samples to be considered as a valid seen cluster
+min_labelled_samples: 2
+
+
+# resume warmedup model
+pretrained_dir: 'dino'
+
+
+
+lr_decay_proj_layer: 1
+use_gt_prior: False
+
+
+centroid_type: 'preds'
+
+## EMA
+ema_decay: 0.8
+
+## Temperature scaling
+prior_temperature: 1
+
+point_wise_ent_weight: 0
+
+re_init_prototypes: False

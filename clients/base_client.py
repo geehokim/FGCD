@@ -14,6 +14,7 @@ from models import build_encoder, get_model
 from typing import Callable, Dict, Tuple, Union, List
 from utils.logging_utils import AverageMeter
 from torch.cuda.amp import autocast, GradScaler
+import torch.optim as optim
 
 import logging
 logger = logging.getLogger(__name__)
@@ -52,24 +53,34 @@ class Client():
                 p.requires_grad = False
 
         self.device = device
-        self.num_layers = self.model.num_layers #TODO: self.model.num_layers
+        # self.num_layers = self.model.num_layers
         # self.num_layers = 6
 
         # self.loader = DataLoader(local_dataset, batch_size=self.args.batch_size, shuffle=True)
-        train_sampler = None
-        if self.args.dataset.num_instances > 0:
-            train_sampler = RandomClasswiseSampler(local_dataset, num_instances=self.args.dataset.num_instances)   
-        self.loader =  DataLoader(local_dataset, batch_size=self.args.batch_size, sampler=train_sampler, shuffle=train_sampler is None,
-                                   num_workers=self.args.num_workers, pin_memory=self.args.pin_memory, drop_last=False)
+        # train_sampler = None
+        # if self.args.dataset.num_instances > 0:
+        #     train_sampler = RandomClasswiseSampler(local_dataset, num_instances=self.args.dataset.num_instances)
+        # self.loader =  DataLoader(local_dataset, batch_size=self.args.batch_size, sampler=train_sampler, shuffle=train_sampler is None,
+        #                            num_workers=self.args.num_workers, pin_memory=self.args.pin_memory, drop_last=False)
 
-        self.optimizer = optim.SGD(self.model.parameters(), lr=local_lr, momentum=self.args.optimizer.momentum, weight_decay=self.args.optimizer.wd)
-        self.scheduler = optim.lr_scheduler.LambdaLR(optimizer=self.optimizer, 
+        # --------------------
+        # SAMPLER
+        # Sampler which balances labelled and unlabelled examples in each batch
+        # --------------------
+        label_len = len(local_dataset.labelled_dataset)
+        unlabelled_len = len(local_dataset.unlabelled_dataset)
+        sample_weights = [1 if i < label_len else label_len / unlabelled_len for i in range(len(local_dataset))]
+        sample_weights = torch.DoubleTensor(sample_weights)
+        sampler = torch.utils.data.WeightedRandomSampler(sample_weights, num_samples=len(local_dataset))
+        self.loader = DataLoader(local_dataset, batch_size=self.args.batch_size, sampler=sampler, shuffle=False,
+                                 num_workers=self.args.num_workers, pin_memory=self.args.pin_memory, drop_last=False)
+        self.optimizer = optim.SGD(self.model.parameters(), lr=local_lr, momentum=self.args.optimizer.momentum,
+                                   weight_decay=self.args.optimizer.wd)
+        self.scheduler = optim.lr_scheduler.LambdaLR(optimizer=self.optimizer,
                                                      lr_lambda=lambda epoch: self.args.trainer.local_lr_decay ** epoch)
-        
-        
         self.class_counts = np.sort([*local_dataset.class_dict.values()])[::-1]
-
-        self.num_classes = len(self.loader.dataset.dataset.classes)
+        #self.num_classes = len(self.loader.dataset.dataset.classes)
+        self.num_classes = len(self.args.dataset.seen_classes) + len(self.args.dataset.unseen_classes)
 
         # self.class_stats['ratio'] = torch.zeros(self.num_classes)
         # for class_key in local_dataset.class_dict:
@@ -159,7 +170,7 @@ class Client():
 
         for local_epoch in range(self.args.trainer.local_epochs):
             end = time.time()
-            for i, (images, labels) in enumerate(self.loader):
+            for i, (images, labels, uq_idxs, mask_lab) in enumerate(self.loader):
                 
                 if len(images.size()) == 3:
                     images = images.unsqueeze(0)

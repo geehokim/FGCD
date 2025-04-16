@@ -1,8 +1,12 @@
+import copy
+import time
 import numpy as np
 import torch
 import contextlib
+from torchvision.datasets import CIFAR10, CIFAR100
 
-__all__ = ['cifar_iid']
+
+__all__ = ['cifar_iid', 'cifar_subclass_dirichlet_balanced']
 
 @contextlib.contextmanager
 def temp_seed(seed):
@@ -14,6 +18,7 @@ def temp_seed(seed):
         yield
     finally:
         np.random.set_state(state)
+
 
 
 def cifar_iid(dataset, num_users):
@@ -243,6 +248,85 @@ def cifar_dirichlet_balanced(dataset, n_nets, alpha=0.5):
     return net_dataidx_map
     #return (X_train, y_train, X_test, y_test, net_dataidx_map, traindata_cls_counts)
 
+def subsample_dataset(dataset, idxs):
+
+    # Allow for setting in which all empty set of indices is passed
+    if len(idxs) > 0:
+        dataset.data = dataset.data[idxs]
+        dataset.targets = np.array(dataset.targets)[idxs]
+        dataset.uq_idxs = dataset.uq_idxs[idxs]
+
+        return dataset
+
+    else:
+
+        return None
+def subsample_classes(dataset, include_classes=(0, 1, 8, 9)):
+
+    cls_idxs = [x for x, t in enumerate(dataset.targets) if t in include_classes]
+    dataset = subsample_dataset(dataset, cls_idxs)
+
+    return dataset
+
+def cifar_subclass_dirichlet_balanced(dataset, n_nets, alpha=0.5, iid_classes=range(100), non_iid_classes=range(100, 200)):
+    iid_classes_dataset = subsample_classes(copy.deepcopy(dataset), include_classes=iid_classes)
+    non_iid_classes_indices = set(dataset.uq_idxs) - set(iid_classes_dataset.uq_idxs)
+    non_iid_classes_dataset = subsample_dataset(copy.deepcopy(dataset),
+                                                 np.array(list(non_iid_classes_indices)))
+
+    with temp_seed(0):
+        ## IID sampling for seen classes
+        num_items = int(len(iid_classes_dataset) / n_nets)
+        # num_items=8
+        dict_users, all_idxs = {}, iid_classes_dataset.uq_idxs
+        for i in range(n_nets):
+            dict_users[i] = set(np.random.choice(all_idxs, num_items, replace=False))
+            ## they are unique_indexes
+            all_idxs = list(set(all_idxs) - dict_users[i])
+
+        ## Dirichlet sampling for unseen classes
+        y_train=torch.zeros(len(non_iid_classes_dataset),dtype=torch.long)
+
+        for a in range(len(non_iid_classes_dataset)):
+            y_train[a]=(non_iid_classes_dataset[a][1])
+        n_train = len(non_iid_classes_dataset)
+
+        min_size = 0
+        K = len(non_iid_classes)
+        N = y_train.shape[0]
+        print(N)
+        #net_dataidx_map = {i: np.array([], dtype='int64') for i in range(n_nets)}
+        assigned_ids = []
+        idx_batch = [[] for _ in range(n_nets)]
+        num_data_per_client=int(N/n_nets)
+        for i in range(n_nets):
+            weights = torch.zeros(N)
+            proportions = np.random.dirichlet(np.repeat(alpha, K))
+            proportions_dict = {}
+            for j, cls in enumerate(non_iid_classes):
+                proportions_dict[cls] = proportions[j]
+            for k in non_iid_classes:
+                idx_k = np.where(y_train == k)[0]
+                weights[idx_k]=proportions_dict[k]
+            weights[assigned_ids] = 0.0
+            idx_batch[i] = (torch.multinomial(weights, num_data_per_client, replacement=False)).tolist()
+            assigned_ids+=idx_batch[i]
+
+
+        for j in range(n_nets):
+            idx_batch[j] = non_iid_classes_dataset.uq_idxs[idx_batch[j]]
+            np.random.shuffle(idx_batch[j])
+            tmp_lst = list(dict_users[j]) + list(idx_batch[j])
+            if len(tmp_lst) != len(set(tmp_lst)):
+                raise False
+            dict_users[j] = set(tmp_lst)
+            pass
+        return dict_users
+
+
+    #traindata_cls_counts = record_net_data_stats(y_train, net_dataidx_map, logdir)
+    # return net_dataidx_map
+    #return (X_train, y_train, X_test, y_test, net_dataidx_map, traindata_cls_counts)
 
 def cifar_toyset(dataset, num_users=3, num_valid_classes=3, limit_number_per_class = 500, toy_noniid_rate=0.1, non_iid = True):
     """
@@ -302,3 +386,45 @@ def cifar_toyset(dataset, num_users=3, num_valid_classes=3, limit_number_per_cla
             this_label_num = sum(labels[list(dict_users[i])] == c)
             print("client_idx, class_idx, num_samples_class :",i,c,this_label_num)
     return dict_users
+
+
+from datasets.build import DATASET_REGISTRY
+
+@DATASET_REGISTRY.register()
+class cifar10(CIFAR10):
+
+    def __init__(self, *args, **kwargs):
+
+        super(cifar10, self).__init__(*args, **kwargs)
+
+        self.uq_idxs = np.array(range(len(self)))
+        self.cluster_labels = None
+
+    def __getitem__(self, item):
+
+        img, label = super().__getitem__(item)
+        uq_idx = self.uq_idxs[item]
+        if self.cluster_labels is None:
+            return img, label, uq_idx
+        else:
+            return img, label, self.cluster_labels[item], uq_idx
+
+    def __len__(self):
+        return len(self.targets)
+
+@DATASET_REGISTRY.register()
+class cifar100(CIFAR100):
+
+    def __init__(self, *args, **kwargs):
+        super(cifar100, self).__init__(*args, **kwargs)
+
+        self.uq_idxs = np.array(range(len(self)))
+
+    def __getitem__(self, item):
+        img, label = super().__getitem__(item)
+        uq_idx = self.uq_idxs[item]
+
+        return img, label, uq_idx
+
+    def __len__(self):
+        return len(self.targets)

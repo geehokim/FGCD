@@ -1,0 +1,6 @@
+## Evaler ##
+type: FinchEvaler
+alg: finch
+freq: 1
+batch_size: 1024
+cluster_eval: feats_proj

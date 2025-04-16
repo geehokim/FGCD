@@ -1,0 +1,4 @@
+## Server ##
+type: CCServer
+momentum: -1
+centroid_aggre_type: local_centroids_SK

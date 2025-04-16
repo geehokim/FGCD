@@ -1,0 +1,85 @@
+## Client ##
+type: SimGCD_GT_Entopy_Client
+n_views: 2
+#temperature: 0.07
+unsup_temperature: 1
+sup_temperature: 0.07 # default
+sup_con_weight: 0.35
+sup_cls_weight: 0.20
+unsup_con_weight: 0.65
+unsup_cls_weight: 0.80
+g_clipping: True
+proj_layer_lr_decay: 1
+warmup_teacher_temp: 0.07
+teacher_temp: 0.04
+student_temp: 0.1
+warmup_teacher_temp_epochs: 30
+memax_weight: 1
+prior_temp: 0.1
+avg_temp: 0.1
+distance_type: 'l2'
+
+softmax_prior: False
+label_smoothing: True
+smooth_max: 0.9
+shuffle_unseen_prior: False
+reg_classes: 5
+
+
+update_prior: True
+update_prior_freq: 1
+start_update: 1
+update_alg: finch
+agglo_method: 'ward'
+
+
+align_gt: True
+align_type: 'centroid'
+
+
+
+update_lambda: 0.9
+
+
+log_div_from_gt: True
+soft_preds_temp: 0.04
+
+ce_type: ce
+margin_m: 0.5
+margin_s: 10
+
+# OOD-FINCH
+lambda_param: 1
+
+# estimate num clusters
+est_num_clusters: False
+k_mode: 's_dbw'
+clust_feats: 'feats'
+
+# Proto clustering
+get_local_centroid: False
+local_centroid_type: 'finch'
+
+
+# Class association loss
+centroids_cls_weight: 0.0
+
+# tolerance
+tolerance: 5
+# alignment threshold
+align_threshold: 10
+
+min_labelled_samples: 1
+
+
+# resume warmedup model
+pretrained_dir: 'dino'
+
+# stochastic freq
+stochastic_freq: 1
+
+# freeze extractor
+freeze_extractor: False
+
+
+

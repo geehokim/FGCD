@@ -18,7 +18,8 @@ def get_model(args,trainset = None):
     print(" 3) use_bn =", args.use_bn)
     print(" 4) use_pre_fc =", args.use_pre_fc)
     print(" 5) use_bn_layer =", args.use_bn_layer)
-    model = models.__dict__[args.arch](args, num_classes=num_classes, l2_norm=args.l2_norm, use_pretrained = args.use_pretrained, transfer_learning = not(args.No_transfer_learning), use_bn = args.use_bn, use_pre_fc = args.use_pre_fc, use_bn_layer = args.use_bn_layer)
+    model = models.__dict__[args.arch](args, num_classes=num_classes, l2_norm=args.l2_norm, use_pretrained = args.use_pretrained, transfer_learning = not(args.No_transfer_learning), use_bn = args.use_bn, use_pre_fc = args.use_pre_fc, use_bn_layer = args.use_bn_layer, 
+                                       classifier_at_proj=args.classifier_at_proj)
     #model = models.__dict__[args.arch](num_classes=num_classes, l2_norm=args.l2_norm, use_pretrained = args.use_pretrained, transfer_learning = not(args.No_transfer_learning), use_bn = args.use_bn, use_pre_fc = args.use_pre_fc, use_bn_layer = args.use_bn_layer)
     return model
 

@@ -1,0 +1,8 @@
+#################### Model ####################
+model:
+  name: "vit_base"
+  pretrained: True
+  pretrained_path: 
+  l2_norm: False
+  use_bn_layer: False
+

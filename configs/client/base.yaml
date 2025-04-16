@@ -1,2 +1,4 @@
 ## Client ##
 type: Client
+# resume warmedup model
+pretrained_dir: 'dino'

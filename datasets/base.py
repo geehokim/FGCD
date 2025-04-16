@@ -8,6 +8,8 @@ import torchvision
 import numpy as np
 import PIL.Image
 from PIL import Image
+from collections import defaultdict
+from torch.utils.data import  Dataset
 
 def pil_loader(path):
     with open(path, 'rb') as f:
@@ -97,3 +99,120 @@ class BaseDataset2(torch.utils.data.Dataset):
         self.ys = [self.ys[i] for i in I]
         self.I = [self.I[i] for i in I]
         self.im_paths = [self.im_paths[i] for i in I]
+
+
+class MergedDataset(Dataset):
+    """
+    Takes two datasets (labelled_dataset, unlabelled_dataset) and merges them
+    Allows you to iterate over them in parallel
+    """
+    def __init__(self, labelled_dataset, unlabelled_dataset, class_dict=None):
+
+        self.labelled_dataset = labelled_dataset
+        self.unlabelled_dataset = unlabelled_dataset
+        self.target_transform = None
+        if class_dict is not None:
+            self.class_dict = class_dict
+        else:
+            self.class_dict = defaultdict(int)
+            for idx in range(len(self.labelled_dataset)):
+                _, label, _ = self.labelled_dataset[idx]
+                if torch.is_tensor(label):
+                    label = str(label.item())
+                else:
+                    label = str(label)
+
+                self.class_dict[str(label)] += 1
+            for idx in range(len(self.unlabelled_dataset)):
+                _, label, _ = self.unlabelled_dataset[idx]
+                if torch.is_tensor(label):
+                    label = str(label.item())
+                else:
+                    label = str(label)
+                if label in self.class_dict:
+                    self.class_dict[str(label)] += 1
+                else:
+                    self.class_dict[str(label)] = 1
+
+    def __getitem__(self, item):
+
+        if item < len(self.labelled_dataset):
+            img, label, uq_idx = self.labelled_dataset[item]
+            labeled_or_not = 1
+
+        else:
+            #import pdb; pdb.set_trace()
+            img, label, uq_idx = self.unlabelled_dataset[item - len(self.labelled_dataset)]
+            labeled_or_not = 0
+
+
+        return img, label, uq_idx, np.array([labeled_or_not])
+
+    def __len__(self):
+        return len(self.unlabelled_dataset) + len(self.labelled_dataset)
+    
+
+
+
+class MergedDatasetCluster(Dataset):
+    """
+    Takes two datasets (labelled_dataset, unlabelled_dataset) and merges them
+    Allows you to iterate over them in parallel
+    """
+    def __init__(self, labelled_dataset, unlabelled_dataset, class_dict=None, cluster_labels=None):
+
+        self.labelled_dataset = labelled_dataset
+        self.unlabelled_dataset = unlabelled_dataset
+        self.target_transform = None
+        self.class_dict=class_dict
+        self.cluster_labels=cluster_labels
+
+    def __getitem__(self, item):
+        if item < len(self.labelled_dataset):
+            img, label, uq_idx = self.labelled_dataset[item]
+            labeled_or_not = 1
+
+        else:
+            #import pdb; pdb.set_trace()
+            img, label, uq_idx = self.unlabelled_dataset[item - len(self.labelled_dataset)]
+            labeled_or_not = 0
+
+        if labeled_or_not == 0:
+            label = self.cluster_labels[item - len(self.labelled_dataset)]
+            
+        return img, label, uq_idx, np.array([labeled_or_not])
+
+    def __len__(self):
+        return len(self.unlabelled_dataset) + len(self.labelled_dataset)
+    
+
+class MergedDatasetClusterSemi(Dataset):
+    """
+    Takes two datasets (labelled_dataset, unlabelled_dataset) and merges them
+    Allows you to iterate over them in parallel
+    """
+    def __init__(self, labelled_dataset, unlabelled_dataset, class_dict=None, cluster_labels=None):
+
+        self.labelled_dataset = labelled_dataset
+        self.unlabelled_dataset = unlabelled_dataset
+        self.target_transform = None
+        self.class_dict=class_dict
+        self.cluster_labels=cluster_labels
+
+    def __getitem__(self, item):
+        if item < len(self.labelled_dataset):
+            img, label, uq_idx = self.labelled_dataset[item]
+            labeled_or_not = 1
+
+        else:
+            #import pdb; pdb.set_trace()
+            img, label, uq_idx = self.unlabelled_dataset[item - len(self.labelled_dataset)]
+            labeled_or_not = 0
+
+
+        label = self.cluster_labels[item]
+            
+        return img, label, uq_idx, np.array([labeled_or_not])
+
+    def __len__(self):
+        return len(self.unlabelled_dataset) + len(self.labelled_dataset)

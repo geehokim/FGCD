@@ -1,0 +1,7 @@
+## Server ##
+type: ServerNovelClustering
+momentum: -1
+start_update: 0
+use_global_centroids_as_classifier: False
+clustering_alg: 'kmeans'
+clustering_after_aggregation: False

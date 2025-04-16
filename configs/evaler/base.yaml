@@ -2,6 +2,7 @@
 type: Evaler
 freq: 1
 retrieval_freq: 10
-batch_size: 128
+batch_size: 1024
 landscape_freq: 0
-  
+local_evaler:
+  divergence_from_gt_prior: True

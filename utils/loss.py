@@ -4,9 +4,170 @@ import torch.nn.functional as F
 import numpy as np
 from collections import defaultdict
 from utils.helper import *
+from torch import nn, autograd
+import collections
 
-__all__ = ['MultiLabelCrossEntropyLoss','MetricLoss', 'MetricLoss2', 'UnsupMetricLoss', 'MetricLoss_rel', 'MetricLossSubset', 'TripletLoss', 'IL','CE','IL_negsum', 'DeepInversionFeatureHook', 'LossManager', 'FedLC', 'FedDecorrLoss', 'MetricLoss_djr']
+__all__ = ['ClusterLoss', 'ClusterLossProto', 'MarginLoss', 'FedDecorrLoss', 'MultiLabelCrossEntropyLoss','MetricLoss', 'MetricLoss2', 'UnsupMetricLoss', 'MetricLoss_rel', 'MetricLossSubset', 'TripletLoss', 'IL','CE','IL_negsum', 'DeepInversionFeatureHook', 'LossManager', 'FedLC', 'FedDecorrLoss', 'MetricLoss_djr']
 
+class CM(autograd.Function):
+
+    @staticmethod
+    def forward(ctx, inputs, targets, features, momentum):
+        ctx.features = features
+        ctx.momentum = momentum
+        ctx.save_for_backward(inputs, targets)
+        outputs = inputs.mm(ctx.features.t())
+
+        return outputs
+
+    @staticmethod
+    def backward(ctx, grad_outputs):
+        inputs, targets = ctx.saved_tensors
+        grad_inputs = None
+        if ctx.needs_input_grad[0]:
+            grad_inputs = grad_outputs.mm(ctx.features)
+
+        # momentum update
+        for x, y in zip(inputs, targets):
+            ctx.features[y] = ctx.momentum * ctx.features[y] + (1. - ctx.momentum) * x
+            ctx.features[y] /= ctx.features[y].norm()
+
+        return grad_inputs, None, None, None
+
+
+def cm(inputs, indexes, features, momentum=0.5, device=None):
+    if device is None:
+        return CM.apply(inputs, indexes, features.to(inputs.device), torch.Tensor([momentum]).to(inputs.device))
+    else:
+        return CM.apply(inputs.to(device), indexes, features.to(device), torch.Tensor([momentum]).to(device))
+
+
+class CM_Hard(autograd.Function):
+
+    @staticmethod
+    def forward(ctx, inputs, targets, features, momentum):
+        ctx.features = features
+        ctx.momentum = momentum
+        ctx.save_for_backward(inputs, targets)
+        outputs = inputs.mm(ctx.features.t())
+
+        return outputs
+
+    @staticmethod
+    def backward(ctx, grad_outputs):
+        inputs, targets = ctx.saved_tensors
+        grad_inputs = None
+        if ctx.needs_input_grad[0]:
+            grad_inputs = grad_outputs.mm(ctx.features)
+
+        batch_centers = collections.defaultdict(list)
+        for instance_feature, index in zip(inputs, targets.tolist()):
+            batch_centers[index].append(instance_feature)
+
+        for index, features in batch_centers.items():
+            distances = []
+            for feature in features:
+                distance = feature.unsqueeze(0).mm(ctx.features[index].unsqueeze(0).t())[0][0]
+                distances.append(distance.cpu().numpy())
+
+            median = np.argmin(np.array(distances))
+            ctx.features[index] = ctx.features[index] * ctx.momentum + (1 - ctx.momentum) * features[median]
+            ctx.features[index] /= ctx.features[index].norm()
+
+        return grad_inputs, None, None, None
+
+
+def cm_hard(inputs, indexes, features, momentum=0.5, device=None):
+    if device is None:
+        return CM_Hard.apply(inputs, indexes, features, torch.Tensor([momentum]).to(inputs.device))
+    else:
+        return CM_Hard.apply(inputs.to(device), indexes, features, torch.Tensor([momentum]).to(device))
+
+class ClusterLoss(nn.Module):
+    def __init__(self, num_features, num_samples, temperature=0.07, momentum=1, device=None):
+        super(ClusterLoss, self).__init__()
+        self.num_features = num_features
+        self.num_samples = num_samples
+        self.temperature = temperature
+        self.register_buffer('prototypes', torch.zeros(self.num_samples, self.num_features))
+        self.momentum = momentum
+        self.device = device
+    # def update_prototypes(self, prototypes, device=None):
+    #     prototypes = F.normalize(prototypes, dim=1)
+    #     self.prototypes = nn.Parameter(prototypes)
+    #     self.device = device
+
+    def forward(self, x, target):
+        
+        # prototypes = F.normalize(self.prototypes, dim=-1, p=2)
+        prototypes = self.prototypes.to(self.device)
+        # batch_size, num_view, feat_dim = x.size()
+        # x = x.view(batch_size * num_view, feat_dim)
+        # target2 = target.detach().clone()
+        # target = torch.cat([target, target2], dim=0).to(self.device)
+        # outputs = torch.matmul(x, prototypes.T) / self.temperature
+        # # outputs = cm(x, target, prototypes, 0.9, self.device)
+        # # outputs /= self.temperature
+        # loss = F.cross_entropy(outputs, target.long())
+
+        # outputs = torch.matmul(x, prototypes.T) / self.temperature
+        outputs = cm(x, target, prototypes, self.momentum, self.device)
+        outputs /= self.temperature
+        loss = F.cross_entropy(outputs, target.long())
+        return loss
+
+class ClusterLossProto(nn.Module):
+    def __init__(self, num_features, num_samples, temperature=0.07, device=None):
+        super(ClusterLossProto, self).__init__()
+        self.num_features = num_features
+        self.num_samples = num_samples
+        self.temperature = temperature
+        self.prototypes = nn.Parameter(torch.zeros(self.num_samples, self.num_features))
+        # self.register_buffer('prototypes', nn.Parameter(torch.zeros(self.num_samples, self.num_features)))
+        self.device = device
+    
+    # def update_prototypes(self, prototypes, device=None):
+    #     prototypes = F.normalize(prototypes, dim=1)
+    #     self.prototypes = nn.Parameter(prototypes)
+    #     self.device = device
+
+    def forward(self, x, target):
+        
+        prototypes = F.normalize(self.prototypes, dim=-1, p=2)
+        prototypes = self.prototypes.to(self.device)
+        # batch_size, num_view, feat_dim = x.size()
+        # x = x.view(batch_size * num_view, feat_dim)
+        # target2 = target.detach().clone()
+        # target = torch.cat([target, target2], dim=0).to(self.device)
+        outputs = torch.matmul(x, prototypes.T) / self.temperature
+        # # outputs = cm(x, target, prototypes, 0.9, self.device)
+        # # outputs /= self.temperature
+        # loss = F.cross_entropy(outputs, target.long())
+
+        # outputs = torch.matmul(x, prototypes.T) / self.temperature
+        # outputs = cm(x, target, prototypes, self.momentum, self.device)
+        # outputs /= self.temperature
+        loss = F.cross_entropy(outputs, target.long())
+        return loss
+
+
+class MarginLoss(nn.Module):
+    """
+    Margin Loss
+    """
+    def __init__(self, m=0.2, weight=None, s=10):
+        super(MarginLoss, self).__init__()
+        self.m = m
+        self.s = s
+        self.weight = weight
+
+    def forward(self, x, target):
+        index = torch.zeros_like(x, dtype=torch.uint8)
+        index.scatter_(1, target.data.view(-1, 1), 1)
+        x_m = x - self.m * self.s
+    
+        output = torch.where(index, x_m, x)
+        return F.cross_entropy(output, target, weight=self.weight)
 
 class MultiLabelCrossEntropyLoss(nn.Module):
     """NLL loss with label smoothing."""
@@ -314,7 +475,38 @@ class MultiLabelCrossEntropyLoss(nn.Module):
 
         return loss
 
-    
+
+
+class FedDecorrLoss(nn.Module):
+
+    def __init__(self):
+        super(FedDecorrLoss, self).__init__()
+        self.eps = 1e-8
+
+    def _off_diagonal(self, mat):
+        # return a flattened view of the off-diagonal elements of a square matrix
+        n, m = mat.shape
+        assert n == m
+        return mat.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
+
+    def forward(self, x):
+        if len(x.shape) == 4:
+            x = F.adaptive_avg_pool2d(x, 1).squeeze(-1).squeeze(-1)
+        N, C = x.shape
+        if N == 1:
+            return 0.0
+
+        x = x - x.mean(dim=0, keepdim=True)
+        x = x / torch.sqrt(self.eps + x.var(dim=0, keepdim=True))
+
+        corr_mat = torch.matmul(x.t(), x)
+
+        loss = (self._off_diagonal(corr_mat).pow(2)).mean()
+        loss = loss / N
+
+        return loss
+
+
 class MetricLoss(nn.Module):
 
     def __init__(self, topk_pos=-1, topk_neg=-1, temp=1, eps=0., pair=None, loss_type=None, beta=None,

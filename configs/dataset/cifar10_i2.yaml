@@ -1,5 +1,0 @@
-### dataset ###
-name: 'CIFAR10'
-path: './data'
-client_path: "./client_data"
-num_instances: 2

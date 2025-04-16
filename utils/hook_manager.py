@@ -17,7 +17,7 @@ import sys
 import inspect
 
 #sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(os.path.abspath("__file__")))))
-from models import ResNet18_GFLN
+# from models import ResNet18_GFLN
 from models.resnet_GFLN import Bottleneck, BasicBlock
 
 

@@ -25,7 +25,7 @@ from evalers.build import EVALER_REGISTRY
 from servers import Server
 from clients import Client
 
-from utils import DatasetSplit, get_dataset
+#from utils import DatasetSplit, get_dataset
 from utils.logging_utils import AverageMeter
 
 from torch.utils.data import DataLoader
@@ -42,6 +42,8 @@ import netcal
 from netcal.metrics import ECE
 from netcal import metrics, scaling, presentation
 from matplotlib.backends.backend_pdf import PdfPages
+from sklearn.cluster import KMeans
+from utils import cluster_acc, np, linear_assignment
 
 
 def all_gather_nd(x):
@@ -90,128 +92,293 @@ class Evaler():
     def set_local_test_loaders(self):
         return
 
+    def split_cluster_acc_v1(self, y_true, y_pred, mask):
+
+        """
+        Evaluate clustering metrics on two subsets of data, as defined by the mask 'mask'
+        (Mask usually corresponding to `Old' and `New' classes in GCD setting)
+        :param targets: All ground truth labels
+        :param preds: All predictions
+        :param mask: Mask defining two subsets
+        :return:
+        """
+
+        mask = mask.astype(bool)
+        y_true = y_true.astype(int)
+        y_pred = y_pred.astype(int)
+        weight = mask.mean()
+
+        old_acc = cluster_acc(y_true[mask], y_pred[mask])
+        new_acc = cluster_acc(y_true[~mask], y_pred[~mask])
+        total_acc = weight * old_acc + (1 - weight) * new_acc
+
+        return total_acc, old_acc, new_acc
+
+    def split_cluster_acc_v2(self, y_true, y_pred, mask):
+        """
+        Calculate clustering accuracy. Require scikit-learn installed
+        First compute linear assignment on all data, then look at how good the accuracy is on subsets
+
+        # Arguments
+            mask: Which instances come from old classes (True) and which ones come from new classes (False)
+            y: true labels, numpy.array with shape `(n_samples,)`
+            y_pred: predicted labels, numpy.array with shape `(n_samples,)`
+
+        # Return
+            accuracy, in [0,1]
+        """
+        y_true = y_true.astype(int)
+
+        old_classes_gt = set(y_true[mask])
+        new_classes_gt = set(y_true[~mask])
+
+        assert y_pred.size == y_true.size
+        D = max(y_pred.max(), y_true.max()) + 1
+        w = np.zeros((D, D), dtype=int)
+        for i in range(y_pred.size):
+            w[y_pred[i], y_true[i]] += 1
+
+        ind = linear_assignment(w.max() - w)
+        ind = np.vstack(ind).T
+
+        ind_map = {j: i for i, j in ind}
+        total_acc = sum([w[i, j] for i, j in ind]) * 1.0 / y_pred.size
+
+        old_acc = 0
+        total_old_instances = 0
+        for i in old_classes_gt:
+            old_acc += w[ind_map[i], i]
+            total_old_instances += sum(w[:, i])
+        old_acc /= total_old_instances
+
+        new_acc = 0
+        total_new_instances = 0
+        for i in new_classes_gt:
+            new_acc += w[ind_map[i], i]
+            total_new_instances += sum(w[:, i])
+        new_acc /= total_new_instances
+
+        return total_acc, old_acc, new_acc
+    def log_accs_from_preds(self, y_true, y_pred, mask, eval_funcs: List[str], save_name: str, T: int = None,
+                            print_output=False):
+
+        """
+        Given a list of evaluation functions to use (e.g ['v1', 'v2']) evaluate and log ACC results
+
+        :param y_true: GT labels
+        :param y_pred: Predicted indices
+        :param mask: Which instances belong to Old and New classes
+        :param T: Epoch
+        :param eval_funcs: Which evaluation functions to use
+        :param save_name: What are we evaluating ACC on
+        :param writer: Tensorboard logger
+        :return:
+        """
+
+        mask = mask.astype(bool)
+        y_true = y_true.astype(int)
+        y_pred = y_pred.astype(int)
+
+        for i, f_name in enumerate(eval_funcs):
+
+            if f_name == 'v1':
+                all_acc, old_acc, new_acc = self.split_cluster_acc_v1(y_true, y_pred, mask)
+            if f_name == 'v2':
+                all_acc, old_acc, new_acc = self.split_cluster_acc_v2(y_true, y_pred, mask)
+            log_name = f'{save_name}_{f_name}'
+
+            if i == 0:
+                to_return = (all_acc, old_acc, new_acc)
+
+            if print_output:
+                print_str = f'Epoch {T}, {log_name}: All {all_acc:.4f} | Old {old_acc:.4f} | New {new_acc:.4f}'
+                print(print_str)
+
+        return to_return
+
     @torch.no_grad()
     def eval(self, model: nn.Module, epoch: int, device: torch.device = None, **kwargs) -> Dict:
-        # eval_device = self.device if not self.args.multiprocessing else torch.device(f'cuda:{self.args.main_gpu}')
 
         model.eval()
-        model_device = next(model.parameters()).device
-        if device is None:
-            device = self.device
-        model.to(device)
-        #print(device)
-        loss, correct, total = 0, 0, 0
+        #model_device = next(model.parameters()).device
+        model.to(self.device)
 
-        if type(self.test_loader.dataset) == DatasetSplit:
-            C = len(self.test_loader.dataset.dataset.classes)
-        else:
-            C = len(self.test_loader.dataset.classes)
+        all_feats = []
+        all_p_feats = []
+        targets = np.array([])
+        mask = np.array([])
 
-        class_loss, class_correct, class_total = torch.zeros(C), torch.zeros(C), torch.zeros(C)
-        # saved_preds, saved_labels = None, None
+        print('Collating features...')
+        # First extract all features
+        for batch_idx, (images, label, _) in enumerate(tqdm.tqdm(self.test_loader)):
+            images = images.to(self.device)
 
-        entropies = []
+            # Pass features through base model and then additional learnable transform (linear layer)
+            p_feats, feats = model(images)
 
-        logits_all, labels_all = [], []
-        #print(device)
+            feats = torch.nn.functional.normalize(feats, dim=-1)
+            p_feats = torch.nn.functional.normalize(p_feats, dim=-1)
 
+            all_feats.append(feats.cpu().numpy())
+            all_p_feats.append(p_feats.cpu().numpy())
+            targets = np.append(targets, label.cpu().numpy())
+            mask = np.append(mask, np.array([True if x.item() in range(len(self.args.dataset.seen_classes))
+                                             else False for x in label]))
 
-        with torch.no_grad():
-            #for images, labels in self.loaders["test"]:
-            #print(f'total_iteration: {len(self.test_loader)}')
-            for idx, (images, labels) in enumerate(self.test_loader):
-                #print(f'iteration: {idx}')
-                images, labels = images.to(device), labels.to(device)
+        # -----------------------
+        # K-MEANS
+        # -----------------------
+        print('Fitting K-Means...')
+        all_feats = np.concatenate(all_feats)
+        all_p_feats = np.concatenate(all_p_feats)
+        num_seen_classes = len(self.args.dataset.seen_classes)
+        num_unseen_classes = len(self.args.dataset.unseen_classes)
+        kmeans = KMeans(n_clusters=num_seen_classes + num_unseen_classes, random_state=0).fit(all_feats)
+        preds = kmeans.labels_
+        p_kmeans = KMeans(n_clusters=num_seen_classes + num_unseen_classes, random_state=0).fit(all_p_feats)
+        p_preds = p_kmeans.labels_
+        print('Done!')
 
-                results = model(images)
-                _, predicted = torch.max(results["logit"].data, 1) # if errors occur, use ResNet18_base instead of ResNet18_GFLN
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-
-                bin_labels = labels.bincount()
-                # print(class_total.size())
-                # print(bin_labels.size())
-                class_total[:bin_labels.size(0)] += bin_labels.cpu()
-                bin_corrects = labels[(predicted == labels)].bincount()
-                class_correct[:bin_corrects.size(0)] += bin_corrects.cpu()
-
-
-                this_loss = self.criterion(results["logit"], labels)
-                loss += this_loss.sum().cpu()
-
-                for class_idx, bin_label in enumerate(bin_labels):
-                    class_loss[class_idx] += this_loss[(labels.cpu() == class_idx)].sum().cpu()
+        # -----------------------
+        # EVALUATE
+        # -----------------------
+        all_acc, old_acc, new_acc = self.log_accs_from_preds(y_true=targets, y_pred=preds, mask=mask,
+                                                        T=epoch, eval_funcs=['v2'], save_name='Test Acc')
 
 
-                logits_all.append(results["logit"].data.cpu())
-                labels_all.append(labels.cpu())
-                # print('test processing')
-
-                # score = F.softmax(results["logit"], 1).detach()
-                # entropy = torch.distributions.Categorical(score).entropy()
-                # uniform_entropy = torch.distributions.Categorical(torch.ones_like(score)).entropy()
-                # entropy_ = entropy / uniform_entropy
-                # entropies.append(entropy_.cpu().numpy())
 
 
-                # if idx==0:
-                #     saved_labels = (labels.cpu())
-                #     saved_preds = (predicted.cpu())
-                # else:
-                #     saved_labels = torch.cat((saved_labels,labels.cpu()),  dim=0)
-                #     saved_preds = torch.cat((saved_preds,predicted.cpu()), dim=0)
-
-        logits_all = torch.cat(logits_all)
-        labels_all = torch.cat(labels_all)
-        # saved_labels = saved_labels.tolist()
-        # saved_preds = saved_preds.tolist()
-
-        scores = F.softmax(logits_all, 1)
-        entropy = torch.distributions.Categorical(scores).entropy().mean()
-        uniform_entropy = torch.distributions.Categorical(torch.ones_like(scores)).entropy().mean()
-        entropy_ = entropy / uniform_entropy
-        print('entropy processing')
-
-        confidences, pred_labels = scores.max(1)
-        corrects = (pred_labels == labels_all)
+        all_p_acc, old_p_acc, new_p_acc = self.log_accs_from_preds(y_true=targets, y_pred=p_preds, mask=mask,
+                                                             T=epoch, eval_funcs=['v2'], save_name='Test Acc')
 
 
-        n_bins = 10
-        ece = ECE(n_bins, detection=True)
-        # miscalibration = ece.measure(calibrated, matched, uncertainty="mean")
-        ece_score = ece.measure(confidences.numpy(), corrects.numpy())
 
-            
-        # entropy = np.mean(entropies)
 
-        acc = 100. * correct / float(total)
-        class_acc = 100. * class_correct / class_total
-        
-        loss = loss / float(total)
-        class_loss = class_loss / class_total
-
-        # if self.args.get('debugs'):
-        diagram = netcal.presentation.ReliabilityDiagram(15)
-        # diagram.plot(confidences.numpy(), corrects.numpy()).savefig(self.checkpoint_dir / 'ece_{}_e{:04d}.png'.format(desc, epoch))
-        ece_diagram = diagram.plot(confidences.numpy(), corrects.numpy())
-            # breakpoint()
-
-        # logger.warning(f'[Epoch {epoch}] Test Accuracy: {acc:.2f}%')
-        model.to(model_device)
+        model.cpu()
         model.train()
         results = {
-            "acc": acc,
-            'class_acc': class_acc,
-            'loss': loss,
-            'class_loss' : class_loss,
-            'entropy': entropy_,
-            'ece': ece_score,
-            'ece_diagram': ece_diagram,
+            "all_acc": all_acc * 100,
+            'old_acc': old_acc * 100,
+            'new_acc': new_acc * 100,
+            "all_p_acc": all_p_acc * 100,
+            'old_p_acc': old_p_acc * 100,
+            'new_p_acc': new_p_acc * 100,
         }
-        # if self.args.get('wandb'):
-        #     results["confusion_matrix"] = wandb.plot.confusion_matrix(probs=None,
-        #                 y_true=saved_labels, preds=saved_preds,
-        #                 class_names=range(len(self.test_loader.dataset.classes)))
+
+        # model.eval()
+        # model_device = next(model.parameters()).device
+        # if device is None:
+        #     device = self.device
+        # model.to(device)
+        # #print(device)
+        # loss, correct, total = 0, 0, 0
+        #
+        # if type(self.test_loader.dataset) == DatasetSplit:
+        #     C = len(self.test_loader.dataset.dataset.classes)
+        # else:
+        #     C = len(self.test_loader.dataset.classes)
+        #
+        # class_loss, class_correct, class_total = torch.zeros(C), torch.zeros(C), torch.zeros(C)
+        # # saved_preds, saved_labels = None, None
+        #
+        # entropies = []
+        #
+        # logits_all, labels_all = [], []
+        # #print(device)
+        #
+        #
+        # with torch.no_grad():
+        #     #for images, labels in self.loaders["test"]:
+        #     #print(f'total_iteration: {len(self.test_loader)}')
+        #     for idx, (images, labels) in enumerate(self.test_loader):
+        #         #print(f'iteration: {idx}')
+        #         images, labels = images.to(device), labels.to(device)
+        #
+        #         results = model(images)
+        #         _, predicted = torch.max(results["logit"].data, 1) # if errors occur, use ResNet18_base instead of ResNet18_GFLN
+        #         total += labels.size(0)
+        #         correct += (predicted == labels).sum().item()
+        #
+        #         bin_labels = labels.bincount()
+        #         # print(class_total.size())
+        #         # print(bin_labels.size())
+        #         class_total[:bin_labels.size(0)] += bin_labels.cpu()
+        #         bin_corrects = labels[(predicted == labels)].bincount()
+        #         class_correct[:bin_corrects.size(0)] += bin_corrects.cpu()
+        #
+        #
+        #         this_loss = self.criterion(results["logit"], labels)
+        #         loss += this_loss.sum().cpu()
+        #
+        #         for class_idx, bin_label in enumerate(bin_labels):
+        #             class_loss[class_idx] += this_loss[(labels.cpu() == class_idx)].sum().cpu()
+        #
+        #
+        #         logits_all.append(results["logit"].data.cpu())
+        #         labels_all.append(labels.cpu())
+        #         # print('test processing')
+        #
+        #         # score = F.softmax(results["logit"], 1).detach()
+        #         # entropy = torch.distributions.Categorical(score).entropy()
+        #         # uniform_entropy = torch.distributions.Categorical(torch.ones_like(score)).entropy()
+        #         # entropy_ = entropy / uniform_entropy
+        #         # entropies.append(entropy_.cpu().numpy())
+        #
+        #
+        #         # if idx==0:
+        #         #     saved_labels = (labels.cpu())
+        #         #     saved_preds = (predicted.cpu())
+        #         # else:
+        #         #     saved_labels = torch.cat((saved_labels,labels.cpu()),  dim=0)
+        #         #     saved_preds = torch.cat((saved_preds,predicted.cpu()), dim=0)
+        #
+        # logits_all = torch.cat(logits_all)
+        # labels_all = torch.cat(labels_all)
+        # # saved_labels = saved_labels.tolist()
+        # # saved_preds = saved_preds.tolist()
+        #
+        # scores = F.softmax(logits_all, 1)
+        # entropy = torch.distributions.Categorical(scores).entropy().mean()
+        # uniform_entropy = torch.distributions.Categorical(torch.ones_like(scores)).entropy().mean()
+        # entropy_ = entropy / uniform_entropy
+        # print('entropy processing')
+        #
+        # confidences, pred_labels = scores.max(1)
+        # corrects = (pred_labels == labels_all)
+        #
+        #
+        # n_bins = 10
+        # ece = ECE(n_bins, detection=True)
+        # # miscalibration = ece.measure(calibrated, matched, uncertainty="mean")
+        # ece_score = ece.measure(confidences.numpy(), corrects.numpy())
+        #
+        #
+        # # entropy = np.mean(entropies)
+        #
+        # acc = 100. * correct / float(total)
+        # class_acc = 100. * class_correct / class_total
+        #
+        # loss = loss / float(total)
+        # class_loss = class_loss / class_total
+        #
+        # # if self.args.get('debugs'):
+        # diagram = netcal.presentation.ReliabilityDiagram(15)
+        # # diagram.plot(confidences.numpy(), corrects.numpy()).savefig(self.checkpoint_dir / 'ece_{}_e{:04d}.png'.format(desc, epoch))
+        # ece_diagram = diagram.plot(confidences.numpy(), corrects.numpy())
+        #     # breakpoint()
+        #
+        # # logger.warning(f'[Epoch {epoch}] Test Accuracy: {acc:.2f}%')
+        # model.to(model_device)
+        # model.train()
+        # results = {
+        #     "acc": acc,
+        #     'class_acc': class_acc,
+        #     'loss': loss,
+        #     'class_loss' : class_loss,
+        #     'entropy': entropy_,
+        #     'ece': ece_score,
+        #     'ece_diagram': ece_diagram,
+        # }
         
         return results
 

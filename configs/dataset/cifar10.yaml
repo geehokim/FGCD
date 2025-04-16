@@ -1,5 +1,16 @@
 ### dataset ###
-name: 'CIFAR10'
+name: 'cifar10'
+#path: '/home2/geeho/FGCD/data'
 path: './data'
 client_path: "./client_data"
+aug: 
+- 'normal'
+- 'normal'
 num_instances: 0
+image_size: 224
+interpolation: 3
+crop_pct: 0.875
+download: False
+seen_classes: [ 0,1,2,3,4 ]
+unseen_classes: [ 5,6,7,8,9 ]
+test_semisup: False

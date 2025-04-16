@@ -6,7 +6,7 @@ import copy
 import os
 from collections import defaultdict
 
-__all__ = ['KLD', 'KLDiv', 'l2norm','get_numclasses','count_label_distribution','check_data_distribution','check_data_distribution_aug','feature_extractor','classifier', 'get_optimizer', 'get_scheduler','freeze_except_fc','unfreeze','get_momentum','modeleval','get_l2norm','get_vertical','cal_cos','create_pth_dict','cal_distances_between_models','cal_distance_between_two_models', 'get_major_minor_stat', 'get_avg_data_per_class', 'append_or_not','mean_dict', 'min_dict', 'cal_att_j_div_r']
+__all__ = ['KLD', 'KLDiv', 'l2norm','get_numclasses','count_label_distribution','check_data_distribution','check_data_distribution_aug','feature_extractor','classifier', 'get_optimizer', 'get_scheduler','freeze_except_fc','unfreeze', 'freeze', 'get_momentum','modeleval','get_l2norm','get_vertical','cal_cos','create_pth_dict','cal_distances_between_models','cal_distance_between_two_models', 'get_major_minor_stat', 'get_avg_data_per_class', 'append_or_not','mean_dict', 'min_dict', 'cal_att_j_div_r']
 
 
 
@@ -42,47 +42,47 @@ def freeze_except_fc(net):
 # In[21]:
 
 
-def unfreeze(net):
-    for name,par in net.named_parameters():
-        par.requires_grad = True
-
-'''
-def KD(input_p,input_q,T=1):
-    p=F.softmax((input_p/T),dim=1)
-    q=F.softmax((input_q/T),dim=1)
-    result=((p*((p/q).log())).sum())/len(input_p)
-    
-    if not torch.isfinite(result):
-        print('==================================================================')
-        print('input_p')
-        print(input_p)
-        
-        print('==================================================================')
-        print('input_q')
-        print(input_q)
-        print('==================================================================')
-        print('p')
-        print(p)
-        
-        print('==================================================================')
-        print('q')
-        print(q)
-        
-        
-        print('******************************************************************')
-        print('p/q')
-        print(p/q)
-        
-        print('******************************************************************')
-        print('(p/q).log()')
-        print((p/q).log())        
-        
-        print('******************************************************************')
-        print('(p*((p/q).log())).sum()')
-        print((p*((p/q).log())).sum())            
-    
-    return result
-'''
+# def unfreeze(net):
+#     for name,par in net.named_parameters():
+#         par.requires_grad = True
+#
+# '''
+# def KD(input_p,input_q,T=1):
+#     p=F.softmax((input_p/T),dim=1)
+#     q=F.softmax((input_q/T),dim=1)
+#     result=((p*((p/q).log())).sum())/len(input_p)
+#
+#     if not torch.isfinite(result):
+#         print('==================================================================')
+#         print('input_p')
+#         print(input_p)
+#
+#         print('==================================================================')
+#         print('input_q')
+#         print(input_q)
+#         print('==================================================================')
+#         print('p')
+#         print(p)
+#
+#         print('==================================================================')
+#         print('q')
+#         print(q)
+#
+#
+#         print('******************************************************************')
+#         print('p/q')
+#         print(p/q)
+#
+#         print('******************************************************************')
+#         print('(p/q).log()')
+#         print((p/q).log())
+#
+#         print('******************************************************************')
+#         print('(p*((p/q).log())).sum()')
+#         print((p*((p/q).log())).sum())
+#
+#     return result
+# '''
 
 
 
@@ -148,11 +148,13 @@ def check_data_distribution_aug(dataloader,class_num:int=10,default_dist:torch.t
     return data_distribution
 
 def get_numclasses(args,trainset = None):
-    if args.dataset.name in ['CIFAR10', "MNIST"]:
+    if args.dataset.name in ['cifar10', "MNIST"]:
         num_classes=10
-    elif args.dataset.name in ["CIFAR100"]:
+    elif args.dataset.name in ["cifar100"]:
         num_classes=100
     elif args.dataset.name in ["TinyImageNet"]:
+        num_classes=200
+    elif args.dataset.name in ["cub", 'cub2']:
         num_classes=200
     elif args.dataset.name in ["iNaturalist"]:
         num_classes=1203
@@ -164,6 +166,12 @@ def get_numclasses(args,trainset = None):
         num_classes = 62
     elif args.dataset.name in ["Shakespeare"]:
         num_classes=80
+    elif args.dataset.name in ["imagenet"]:
+        num_classes=100
+    elif args.dataset.name in ["scars"]:
+        num_classes=196
+    elif args.dataset.name in ["pets"]:
+        num_classes=37
         
     print("num of classes of ", args.dataset.name," is : ", num_classes)
     return num_classes
@@ -489,3 +497,16 @@ def cal_att_j_div_r(input_x):
     #input_vector has shape (# Class, 1), and each element accordint to class property of that index.
     # output[r][c] = input_vector[c] / input_vector[r]
     return input_vector.t() / input_vector
+
+
+def freeze(backbone):
+    backbone.eval()
+    for m in backbone.parameters():
+        m.requires_grad = False
+    return backbone
+
+def unfreeze(backbone):
+    backbone.train()
+    for m in backbone.parameters():
+        m.requires_grad = True
+    return backbone

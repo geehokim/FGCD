@@ -1,0 +1,27 @@
+## Trainer ##
+type: PriorUpdateTrainer
+num_clients: 5
+participation_rate: 1
+# batch_size: 50
+# local_lr_decay: 0.998
+local_lr_decay: 0.97
+local_lr: 0.1
+min_lr: 0.0001
+local_epochs: 1
+global_lr: 1.0
+global_rounds: 200
+lr_scheduler: cosanneal
+local_eval: False
+local_eval_freq: 5
+warmup: 0
+
+
+
+
+
+eval_classifier_variance: False
+eval_classifier_umap: False
+
+
+ema: False
+ema_lambda: 0.7
